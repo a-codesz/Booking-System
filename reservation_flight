@@ -4,6 +4,9 @@ import random
 from collections import deque
 import tkinter as tk
 from tkinter import ttk, messagebox
+from multiprocessing import Process, Pipe, Queue
+import json
+import time
 
 class Flight:
     def __init__(self, flight_id, source, destination, total_seats, price):
@@ -14,66 +17,195 @@ class Flight:
         self.available_seats = total_seats
         self.price = price
 
+    def to_dict(self):
+        return {
+            'flight_id': self.flight_id,
+            'source': self.source,
+            'destination': self.destination,
+            'total_seats': self.total_seats,
+            'available_seats': self.available_seats,
+            'price': self.price
+        }
+
 class Booking:
-    def __init__(self, booking_id, flight_id, passenger_name, seats, priority):
+    def __init__(self, booking_id, flight_id, passenger_name, seats, priority):  
         self.booking_id = booking_id
         self.flight_id = flight_id
         self.passenger_name = passenger_name
         self.seats = seats
         self.priority = priority
 
+    def to_dict(self):
+        return {
+            'booking_id': self.booking_id,
+            'flight_id': self.flight_id,
+            'passenger_name': self.passenger_name,
+            'seats': self.seats,
+            'priority': self.priority
+        }
+
+def booking_processor(pipe_conn, booking_queue):
+    """
+    Separate process for handling bookings
+    """
+    flights = {
+        'FL001': Flight('FL001', 'New York', 'London', 4, 500.0),
+        'FL002': Flight('FL002', 'London', 'Paris', 10, 300.0),
+        'FL003': Flight('FL003', 'Paris', 'Tokyo', 8, 800.0)
+    }
+    bookings = {}
+
+    while True:
+        try:
+            # Wait for commands from the main process
+            command = pipe_conn.recv()
+
+            if command['type'] == 'BOOK':
+                booking_data = command['data']
+                flight_id = booking_data['flight_id']
+
+                if flight_id in flights:
+                    flight = flights[flight_id]
+                    if flight.available_seats >= booking_data['seats']:
+                        flight.available_seats -= booking_data['seats']
+                        bookings[booking_data['booking_id']] = booking_data
+                        response = {
+                            'status': 'SUCCESS',
+                            'booking_id': booking_data['booking_id'],
+                            'flight': flight.to_dict()
+                        }
+                    else:
+                        response = {
+                            'status': 'ERROR',
+                            'message': 'Insufficient seats'
+                        }
+                else:
+                    response = {
+                        'status': 'ERROR',
+                        'message': 'Flight not found'
+                    }
+
+                pipe_conn.send(response)
+
+            elif command['type'] == 'CANCEL':
+                booking_id = command['booking_id']
+                if booking_id in bookings:
+                    booking = bookings[booking_id]
+                    flight = flights[booking['flight_id']]
+                    flight.available_seats += booking['seats']
+                    del bookings[booking_id]
+                    response = {
+                        'status': 'SUCCESS',
+                        'flight': flight.to_dict()
+                    }
+                else:
+                    response = {
+                        'status': 'ERROR',
+                        'message': 'Booking not found'
+                    }
+                pipe_conn.send(response)
+
+            elif command['type'] == 'GET_FLIGHTS':
+                available_flights = [flight.to_dict() for flight in flights.values()
+                                  if flight.available_seats > 0]
+                pipe_conn.send({
+                    'status': 'SUCCESS',
+                    'flights': available_flights
+                })
+
+            elif command['type'] == 'GET_BOOKING':
+                booking_id = command['booking_id']
+                booking = bookings.get(booking_id)
+                if booking:
+                    response = {
+                        'status': 'SUCCESS',
+                        'booking': booking
+                    }
+                else:
+                    response = {
+                        'status': 'ERROR',
+                        'message': 'Booking not found'
+                    }
+                pipe_conn.send(response)
+
+            elif command['type'] == 'EXIT':
+                break
+
+        except EOFError:
+            break
+
+    pipe_conn.close()
+
 class FlightReservationSystem:
     def __init__(self):
-        self.flights = {
-            'FL001': Flight('FL001', 'New York', 'London', 100, 500.0),
-            'FL002': Flight('FL002', 'London', 'Paris', 80, 300.0),
-            'FL003': Flight('FL003', 'Paris', 'Tokyo', 120, 800.0)
-        }
-        self.bookings = {}
-        self.booking_queue = deque()
-        self.child_process = None
+        
+        self.parent_conn, self.child_conn = Pipe()
+        self.booking_queue = Queue()
+
+        
+        self.processor = Process(
+            target=booking_processor,
+            args=(self.child_conn, self.booking_queue)
+        )
+        self.processor.start()
 
     def list_available_flights(self):
-        return [flight for flight in self.flights.values() if flight.available_seats > 0]
+        self.parent_conn.send({'type': 'GET_FLIGHTS'})
+        response = self.parent_conn.recv()
+        if response['status'] == 'SUCCESS':
+             flights = []
+        for flight_data in response['flights']:
+           
+            flight = Flight(
+                flight_id=flight_data['flight_id'],
+                source=flight_data['source'],
+                destination=flight_data['destination'],
+                total_seats=flight_data['total_seats'],
+                price=flight_data['price']
+            )
+            flight.available_seats = flight_data['available_seats']  
+            flights.append(flight)
+        return flights
+        return []
 
     def book_flight(self, flight_id, passenger_name, seats, priority):
-        if flight_id not in self.flights:
-            return None
-
-        booking_id = f"BK{len(self.bookings) + 1:03d}"
+        booking_id = f"BK{random.randint(1000, 9999)}"
         booking = Booking(booking_id, flight_id, passenger_name, seats, priority)
-        self.booking_queue.append(booking)
-        self._process_bookings()
-        return booking_id
 
-    def _process_bookings(self):
-        while self.booking_queue:
-            booking = self.booking_queue.popleft()
-            flight = self.flights[booking.flight_id]
-            if flight.available_seats >= booking.seats:
-                flight.available_seats -= booking.seats
-                self.bookings[booking.booking_id] = booking
-                print(f"Booking confirmed: {booking.booking_id} for {booking.passenger_name}")
-                self._apply_scheduling_algorithm()
-            else:
-                self.booking_queue.appendleft(booking)
-                self._apply_scheduling_algorithm()
+        self.parent_conn.send({
+            'type': 'BOOK',
+            'data': booking.to_dict()
+        })
 
-    def _apply_scheduling_algorithm(self):
-        pass
+        response = self.parent_conn.recv()
+        if response['status'] == 'SUCCESS':
+            return response['booking_id']
+        return None
 
     def cancel_booking(self, booking_id):
-        if booking_id not in self.bookings:
-            return False
+        self.parent_conn.send({
+            'type': 'CANCEL',
+            'booking_id': booking_id
+        })
 
-        booking = self.bookings[booking_id]
-        flight = self.flights[booking.flight_id]
-        flight.available_seats += booking.seats
-        del self.bookings[booking_id]
-        return True
+        response = self.parent_conn.recv()
+        return response['status'] == 'SUCCESS'
 
     def get_booking_details(self, booking_id):
-        return self.bookings.get(booking_id)
+        self.parent_conn.send({
+            'type': 'GET_BOOKING',
+            'booking_id': booking_id
+        })
+
+        response = self.parent_conn.recv()
+        if response['status'] == 'SUCCESS':
+            return Booking(**response['booking'])
+        return None
+
+    def shutdown(self):
+        self.parent_conn.send({'type': 'EXIT'})
+        self.processor.join()
+        self.parent_conn.close()
 
 class FlightReservationGUI:
     def __init__(self, root):
@@ -81,9 +213,13 @@ class FlightReservationGUI:
         self.root.title("Flight Reservation System")
         self.system = FlightReservationSystem()
 
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(pady=10, expand=True)
-                
+
         self.flights_tab = ttk.Frame(self.notebook)
         self.booking_tab = ttk.Frame(self.notebook)
         self.manage_tab = ttk.Frame(self.notebook)
@@ -96,6 +232,11 @@ class FlightReservationGUI:
         self._setup_booking_tab()
         self._setup_manage_tab()
 
+    def on_closing(self):
+        self.system.shutdown()
+        self.root.destroy()
+
+    
     def _setup_flights_tab(self):
         columns = ('Flight ID', 'Source', 'Destination', 'Available Seats', 'Price')
         self.flights_tree = ttk.Treeview(self.flights_tab, columns=columns, show='headings')
@@ -131,8 +272,8 @@ class FlightReservationGUI:
         self.priority_var = tk.StringVar(value="3")
         priority_frame = ttk.Frame(form_frame)
         priority_frame.grid(row=3, column=1, pady=5, padx=5)
-        ttk.Radiobutton(priority_frame, text="Business", variable=self.priority_var, value="1").pack(side=tk.LEFT)
-        ttk.Radiobutton(priority_frame, text="Economy Priority", variable=self.priority_var, value="2").pack(side=tk.LEFT)
+        ttk.Radiobutton(priority_frame, text="First Class", variable=self.priority_var, value="1").pack(side=tk.LEFT)
+        ttk.Radiobutton(priority_frame, text="Business", variable=self.priority_var, value="2").pack(side=tk.LEFT)
         ttk.Radiobutton(priority_frame, text="Economy", variable=self.priority_var, value="3").pack(side=tk.LEFT)
 
         ttk.Button(form_frame, text="Book Flight", command=self._book_flight).grid(row=4, column=0, columnspan=2, pady=20)
@@ -165,16 +306,20 @@ class FlightReservationGUI:
             ))
 
     def _book_flight(self):
-        flight_id = self.flight_id_var.get()
-        passenger_name = self.passenger_var.get()
-        seats = int(self.seats_var.get())
-        priority = int(self.priority_var.get())
-        booking_id = self.system.book_flight(flight_id, passenger_name, seats, priority)
-        if booking_id:
-            messagebox.showinfo("Success", f"Booking request submitted. Booking ID: {booking_id}")
-            self._refresh_flights()
-        else:
-            messagebox.showerror("Error", "Flight not found")
+        try:
+            flight_id = self.flight_id_var.get()
+            passenger_name = self.passenger_var.get()
+            seats = int(self.seats_var.get())
+            priority = int(self.priority_var.get())
+
+            booking_id = self.system.book_flight(flight_id, passenger_name, seats, priority)
+            if booking_id:
+                messagebox.showinfo("Success", f"Booking confirmed. Booking ID: {booking_id}")
+                self._refresh_flights()
+            else:
+                messagebox.showerror("Error", "Unable to complete booking")
+        except ValueError:
+            messagebox.showerror("Error", "Please enter valid numbers")
 
     def _view_booking(self):
         booking_id = self.booking_id_var.get()
@@ -194,7 +339,7 @@ class FlightReservationGUI:
             messagebox.showinfo("Success", "Booking cancelled successfully")
             self._refresh_flights()
         else:
-            messagebox.showerror("Error", "Booking not found")
+            messagebox.showerror("Error", "Unable to cancel booking")
 
 def main():
     root = tk.Tk()
@@ -204,3 +349,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
