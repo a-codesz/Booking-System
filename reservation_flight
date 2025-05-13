@@ -1,0 +1,206 @@
+import os
+import sys
+import random
+from collections import deque
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+class Flight:
+    def __init__(self, flight_id, source, destination, total_seats, price):
+        self.flight_id = flight_id
+        self.source = source
+        self.destination = destination
+        self.total_seats = total_seats
+        self.available_seats = total_seats
+        self.price = price
+
+class Booking:
+    def __init__(self, booking_id, flight_id, passenger_name, seats, priority):
+        self.booking_id = booking_id
+        self.flight_id = flight_id
+        self.passenger_name = passenger_name
+        self.seats = seats
+        self.priority = priority
+
+class FlightReservationSystem:
+    def __init__(self):
+        self.flights = {
+            'FL001': Flight('FL001', 'New York', 'London', 100, 500.0),
+            'FL002': Flight('FL002', 'London', 'Paris', 80, 300.0),
+            'FL003': Flight('FL003', 'Paris', 'Tokyo', 120, 800.0)
+        }
+        self.bookings = {}
+        self.booking_queue = deque()
+        self.child_process = None
+
+    def list_available_flights(self):
+        return [flight for flight in self.flights.values() if flight.available_seats > 0]
+
+    def book_flight(self, flight_id, passenger_name, seats, priority):
+        if flight_id not in self.flights:
+            return None
+
+        booking_id = f"BK{len(self.bookings) + 1:03d}"
+        booking = Booking(booking_id, flight_id, passenger_name, seats, priority)
+        self.booking_queue.append(booking)
+        self._process_bookings()
+        return booking_id
+
+    def _process_bookings(self):
+        while self.booking_queue:
+            booking = self.booking_queue.popleft()
+            flight = self.flights[booking.flight_id]
+            if flight.available_seats >= booking.seats:
+                flight.available_seats -= booking.seats
+                self.bookings[booking.booking_id] = booking
+                print(f"Booking confirmed: {booking.booking_id} for {booking.passenger_name}")
+                self._apply_scheduling_algorithm()
+            else:
+                self.booking_queue.appendleft(booking)
+                self._apply_scheduling_algorithm()
+
+    def _apply_scheduling_algorithm(self):
+        pass
+
+    def cancel_booking(self, booking_id):
+        if booking_id not in self.bookings:
+            return False
+
+        booking = self.bookings[booking_id]
+        flight = self.flights[booking.flight_id]
+        flight.available_seats += booking.seats
+        del self.bookings[booking_id]
+        return True
+
+    def get_booking_details(self, booking_id):
+        return self.bookings.get(booking_id)
+
+class FlightReservationGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Flight Reservation System")
+        self.system = FlightReservationSystem()
+
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(pady=10, expand=True)
+                
+        self.flights_tab = ttk.Frame(self.notebook)
+        self.booking_tab = ttk.Frame(self.notebook)
+        self.manage_tab = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.flights_tab, text="Available Flights")
+        self.notebook.add(self.booking_tab, text="Book Flight")
+        self.notebook.add(self.manage_tab, text="Manage Booking")
+
+        self._setup_flights_tab()
+        self._setup_booking_tab()
+        self._setup_manage_tab()
+
+    def _setup_flights_tab(self):
+        columns = ('Flight ID', 'Source', 'Destination', 'Available Seats', 'Price')
+        self.flights_tree = ttk.Treeview(self.flights_tab, columns=columns, show='headings')
+
+        for col in columns:
+            self.flights_tree.heading(col, text=col)
+            self.flights_tree.column(col, width=100)
+
+        self.flights_tree.pack(pady=10, padx=10, expand=True, fill='both')
+        ttk.Button(self.flights_tab, text="Refresh", command=self._refresh_flights).pack(pady=5)
+        self._refresh_flights()
+
+    def _setup_booking_tab(self):
+        form_frame = ttk.Frame(self.booking_tab)
+        form_frame.pack(pady=20, padx=20)
+
+        ttk.Label(form_frame, text="Flight ID:").grid(row=0, column=0, pady=5, padx=5)
+        self.flight_id_var = tk.StringVar()
+        self.flight_id_entry = ttk.Entry(form_frame, textvariable=self.flight_id_var)
+        self.flight_id_entry.grid(row=0, column=1, pady=5, padx=5)
+
+        ttk.Label(form_frame, text="Passenger Name:").grid(row=1, column=0, pady=5, padx=5)
+        self.passenger_var = tk.StringVar()
+        self.passenger_entry = ttk.Entry(form_frame, textvariable=self.passenger_var)
+        self.passenger_entry.grid(row=1, column=1, pady=5, padx=5)
+
+        ttk.Label(form_frame, text="Number of Seats:").grid(row=2, column=0, pady=5, padx=5)
+        self.seats_var = tk.StringVar()
+        self.seats_entry = ttk.Entry(form_frame, textvariable=self.seats_var)
+        self.seats_entry.grid(row=2, column=1, pady=5, padx=5)
+
+        ttk.Label(form_frame, text="Priority:").grid(row=3, column=0, pady=5, padx=5)
+        self.priority_var = tk.StringVar(value="3")
+        priority_frame = ttk.Frame(form_frame)
+        priority_frame.grid(row=3, column=1, pady=5, padx=5)
+        ttk.Radiobutton(priority_frame, text="Business", variable=self.priority_var, value="1").pack(side=tk.LEFT)
+        ttk.Radiobutton(priority_frame, text="Economy Priority", variable=self.priority_var, value="2").pack(side=tk.LEFT)
+        ttk.Radiobutton(priority_frame, text="Economy", variable=self.priority_var, value="3").pack(side=tk.LEFT)
+
+        ttk.Button(form_frame, text="Book Flight", command=self._book_flight).grid(row=4, column=0, columnspan=2, pady=20)
+
+    def _setup_manage_tab(self):
+        form_frame = ttk.Frame(self.manage_tab)
+        form_frame.pack(pady=20, padx=20)
+
+        ttk.Label(form_frame, text="Booking ID:").grid(row=0, column=0, pady=5, padx=5)
+        self.booking_id_var = tk.StringVar()
+        self.booking_id_entry = ttk.Entry(form_frame, textvariable=self.booking_id_var)
+        self.booking_id_entry.grid(row=0, column=1, pady=5, padx=5)
+
+        button_frame = ttk.Frame(form_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, pady=10)
+        ttk.Button(button_frame, text="View Details", command=self._view_booking).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel Booking", command=self._cancel_booking).pack(side=tk.LEFT, padx=5)
+
+    def _refresh_flights(self):
+        for item in self.flights_tree.get_children():
+            self.flights_tree.delete(item)
+
+        for flight in self.system.list_available_flights():
+            self.flights_tree.insert('', 'end', values=(
+                flight.flight_id,
+                flight.source,
+                flight.destination,
+                flight.available_seats,
+                f"${flight.price:.2f}"
+            ))
+
+    def _book_flight(self):
+        flight_id = self.flight_id_var.get()
+        passenger_name = self.passenger_var.get()
+        seats = int(self.seats_var.get())
+        priority = int(self.priority_var.get())
+        booking_id = self.system.book_flight(flight_id, passenger_name, seats, priority)
+        if booking_id:
+            messagebox.showinfo("Success", f"Booking request submitted. Booking ID: {booking_id}")
+            self._refresh_flights()
+        else:
+            messagebox.showerror("Error", "Flight not found")
+
+    def _view_booking(self):
+        booking_id = self.booking_id_var.get()
+        booking = self.system.get_booking_details(booking_id)
+        if booking:
+            messagebox.showinfo("Booking Details",
+                               f"Booking ID: {booking.booking_id}\n"
+                               f"Flight: {booking.flight_id}\n"
+                               f"Passenger: {booking.passenger_name}\n"
+                               f"Seats: {booking.seats}")
+        else:
+            messagebox.showerror("Error", "Booking not found")
+
+    def _cancel_booking(self):
+        booking_id = self.booking_id_var.get()
+        if self.system.cancel_booking(booking_id):
+            messagebox.showinfo("Success", "Booking cancelled successfully")
+            self._refresh_flights()
+        else:
+            messagebox.showerror("Error", "Booking not found")
+
+def main():
+    root = tk.Tk()
+    root.geometry("800x600")
+    app = FlightReservationGUI(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
