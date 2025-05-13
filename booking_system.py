@@ -57,7 +57,6 @@ def booking_processor(pipe_conn, booking_queue):
 
     while True:
         try:
-            # Wait for commands from the main process
             command = pipe_conn.recv()
 
             if command['type'] == 'BOOK':
